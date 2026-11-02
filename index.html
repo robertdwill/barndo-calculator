@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Barndominium Budget Planner | VisionBuilt</title>
+<meta name="description" content="Plan your barndominium budget in minutes. Low, target and high estimates, cost breakdown, what-if scenarios and a monthly payment view.">
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .locked { filter: blur(7px); pointer-events: none; user-select: none; }
+  .card { background:#fff; border-radius:1rem; box-shadow:0 1px 3px rgba(15,23,42,.08), 0 8px 24px rgba(15,23,42,.05); }
+  input[type=range] { accent-color:#b45309; }
+  @media print {
+    .no-print { display:none !important; }
+    body { background:#fff; }
+    .locked { filter:none; }
+    .card { box-shadow:none; border:1px solid #e2e8f0; }
+  }
+</style>
+</head>
+<body class="bg-stone-100 text-slate-900">
+
+<script>
+/* ===================== CONFIG (edit these) ===================== */
+const CONFIG = {
+  PRICE_LABEL: '$9',
+  STRIPE_PAYMENT_LINK: '',        // paste the Stripe Payment Link URL here
+  GHL_WEBHOOK_URL: '',            // paste the GHL inbound webhook URL here
+  // SHA-256 hashes (hex) of valid unlock codes. Generate with the helper in README.md.
+  UNLOCK_HASHES: [],
+  CONTACT_LINE: 'Questions about your build? Talk to Robert at VisionBuilt.',
+};
+/* ===================== RATES (Robert's pricing) =====================
+   Slab: 4" standard 8.25 | 6" heavy shop 11.50
+   Steel: 16.50-23.00 by eave height x pitch multiplier
+   Erection: 8.75-10.25 by eave height
+   Insulation: batt 1.85 | spray foam 3.20
+   Interior: living (calibrated so the default build lands at 175/sf), shop 16.50, dry-in 28
+   Region: CA, FL, WA run about 200/sf vs 175 base -> multiplier 200/175 */
+const RATES = {
+  slab: { std: 8.25, heavy: 11.50 },
+  insul: { batt: 1.85, foam: 3.20 },
+  livingInterior: 137.00,
+  shopInterior: 16.50,
+  dryIn: 28.00,
+  regionHigh: 200 / 175,
+  highCostStates: ['CA', 'FL', 'WA'],
+  lowPct: -0.10, highPct: 0.15,
+};
+</script>
+
+<div class="max-w-6xl mx-auto px-4 py-6 sm:py-10">
+
+  <header class="mb-8">
+    <div class="text-xs font-semibold tracking-widest text-amber-700 uppercase">VisionBuilt</div>
+    <h1 class="text-3xl sm:text-4xl font-extrabold leading-tight mt-1">Barndominium Budget Planner</h1>
+    <p class="text-slate-600 mt-2 max-w-2xl">Set your size, shop-to-living split and finishes. See a realistic low, target and high budget before you talk to a single builder.</p>
+  </header>
+
+  <div class="grid lg:grid-cols-5 gap-6">
+
+    <!-- INPUTS -->
+    <section class="lg:col-span-2 card p-5 space-y-5 no-print" aria-label="Inputs">
+      <h2 class="font-bold text-lg">Your building</h2>
+
+      <div class="grid grid-cols-2 gap-3 text-sm">
+        <label>Width (ft)<input id="width" type="number" min="20" max="120" value="40" class="mt-1 w-full border rounded-lg px-3 py-2"></label>
+        <label>Length (ft)<input id="length" type="number" min="20" max="300" value="60" class="mt-1 w-full border rounded-lg px-3 py-2"></label>
+      </div>
+
+      <label class="block text-sm">Eave height: <b id="eaveOut">14</b> ft
+        <input id="eave" type="range" min="12" max="18" step="1" value="14" class="w-full"></label>
+      <label class="block text-sm">Roof pitch: <b id="pitchOut">4</b>:12
+        <input id="pitch" type="range" min="3" max="6" step="0.5" value="4" class="w-full"></label>
+      <label class="block text-sm">Living <b id="livOut">60</b>% / Shop <b id="shopOut">40</b>%
+        <input id="livPct" type="range" min="0" max="100" step="5" value="60" class="w-full"></label>
+      <label class="block text-sm">Porch (sq ft)
+        <input id="porch" type="number" min="0" step="10" value="400" class="mt-1 w-full border rounded-lg px-3 py-2"></label>
+
+      <h2 class="font-bold text-lg pt-1">Choices</h2>
+      <div class="grid grid-cols-2 gap-3 text-sm">
+        <label>Slab
+          <select id="slab" class="mt-1 w-full border rounded-lg px-3 py-2">
+            <option value="std">Standard 4"</option><option value="heavy">6" Heavy (shop)</option></select></label>
+        <label>Insulation
+          <select id="insul" class="mt-1 w-full border rounded-lg px-3 py-2">
+            <option value="batt">Batt</option><option value="foam">Spray foam</option></select></label>
+        <label class="col-span-2">Interior scope
+          <select id="finish" class="mt-1 w-full border rounded-lg px-3 py-2">
+            <option value="turnkey">Turnkey (finished living + shop)</option>
+            <option value="dryin">Dry-in (shell, ready for your finish)</option></select></label>
+        <label class="col-span-2">State
+          <select id="state" class="mt-1 w-full border rounded-lg px-3 py-2"></select></label>
+        <label class="col-span-2">Local cost adjustment: <b id="regionOut">0</b>%
+          <input id="region" type="range" min="-15" max="30" step="1" value="0" class="w-full">
+          <span class="text-xs text-slate-500">Set from your state, then adjust for your area. Metro and rural markets can differ a lot.</span></label>
+      </div>
+
+      <h2 class="font-bold text-lg pt-1">Financing view</h2>
+      <div class="grid grid-cols-3 gap-3 text-sm">
+        <label>Down %<input id="down" type="number" min="0" max="90" value="20" class="mt-1 w-full border rounded-lg px-3 py-2"></label>
+        <label>Rate %<input id="rate" type="number" min="0" max="25" step="0.125" value="7" class="mt-1 w-full border rounded-lg px-3 py-2"></label>
+        <label>Years<input id="years" type="number" min="5" max="40" value="30" class="mt-1 w-full border rounded-lg px-3 py-2"></label>
+      </div>
+    </section>
+
+    <!-- RESULTS -->
+    <section class="lg:col-span-3 space-y-6" aria-label="Results">
+
+      <div class="relative">
+        <div id="resultsWrap" class="space-y-6 locked">
+
+          <div class="card p-5">
+            <div class="grid grid-cols-3 gap-3 text-center">
+              <div class="rounded-xl bg-emerald-50 p-4"><div class="text-xs text-emerald-700 font-semibold">LOW</div><div id="tLow" class="text-lg sm:text-2xl font-extrabold text-emerald-900"></div></div>
+              <div class="rounded-xl bg-slate-900 p-4"><div class="text-xs text-slate-300 font-semibold">TARGET</div><div id="tTarget" class="text-lg sm:text-2xl font-extrabold text-white"></div></div>
+              <div class="rounded-xl bg-amber-50 p-4"><div class="text-xs text-amber-700 font-semibold">HIGH</div><div id="tHigh" class="text-lg sm:text-2xl font-extrabold text-amber-900"></div></div>
+            </div>
+            <p id="psf" class="text-sm text-slate-600 mt-3 text-center"></p>
+            <p id="areas" class="text-xs text-slate-500 mt-1 text-center"></p>
+          </div>
+
+          <div class="card p-5">
+            <h3 class="font-bold mb-3">Where the money goes</h3>
+            <div class="flex flex-col sm:flex-row items-center gap-5">
+              <svg id="donut" viewBox="0 0 42 42" class="w-44 h-44 shrink-0" role="img" aria-label="Cost breakdown chart"></svg>
+              <ul id="legend" class="w-full text-sm space-y-1.5"></ul>
+            </div>
+          </div>
+
+          <div class="card p-5">
+            <h3 class="font-bold mb-1">What if you change one thing?</h3>
+            <p class="text-xs text-slate-500 mb-3">Target price change against your current setup.</p>
+            <table class="w-full text-sm"><tbody id="whatif"></tbody></table>
+          </div>
+
+          <div class="card p-5">
+            <h3 class="font-bold mb-1">Monthly payment view</h3>
+            <p class="text-xs text-slate-500 mb-3">Principal and interest only, on the target price. Excludes land, taxes and insurance.</p>
+            <div class="grid grid-cols-3 gap-3 text-center">
+              <div><div class="text-xs text-slate-500">Low</div><div id="pmLow" class="font-bold"></div></div>
+              <div><div class="text-xs text-slate-500">Target</div><div id="pmTarget" class="font-bold"></div></div>
+              <div><div class="text-xs text-slate-500">High</div><div id="pmHigh" class="font-bold"></div></div>
+            </div>
+          </div>
+
+          <div class="card p-5 no-print">
+            <h3 class="font-bold mb-1">Send this plan to Robert</h3>
+            <p class="text-xs text-slate-500 mb-3">Get a real conversation about your numbers. No obligation.</p>
+            <form id="leadForm" class="grid sm:grid-cols-3 gap-3 text-sm">
+              <input id="cName" required placeholder="Name" class="border rounded-lg px-3 py-2">
+              <input id="cEmail" required type="email" placeholder="Email" class="border rounded-lg px-3 py-2">
+              <input id="cPhone" placeholder="Phone" class="border rounded-lg px-3 py-2">
+              <button class="sm:col-span-3 bg-amber-700 hover:bg-amber-800 text-white font-semibold rounded-lg py-2.5">Send my plan</button>
+              <p id="leadMsg" class="sm:col-span-3 text-xs text-slate-500"></p>
+            </form>
+            <button id="printBtn" type="button" class="mt-3 text-sm underline text-slate-600">Print or save as PDF</button>
+          </div>
+        </div>
+
+        <!-- paywall -->
+        <div id="paywall" class="absolute inset-0 flex items-start justify-center pt-10 px-2 no-print">
+          <div class="card p-6 max-w-sm w-full text-center border border-amber-200">
+            <div class="text-xs font-semibold tracking-widest text-amber-700 uppercase">Full planner</div>
+            <div class="text-4xl font-extrabold mt-1"><span id="priceLbl"></span></div>
+            <p class="text-sm text-slate-600 mt-2">One payment. Unlocks your low/target/high budget, cost breakdown, what-if scenarios, payment view and a printable plan.</p>
+            <a id="buyBtn" href="#" class="block mt-4 bg-amber-700 hover:bg-amber-800 text-white font-semibold rounded-lg py-3">Unlock for <span class="priceLbl2"></span></a>
+            <div class="mt-4 text-xs text-slate-500">Already paid? Enter your code</div>
+            <div class="flex gap-2 mt-1">
+              <input id="code" placeholder="Unlock code" class="flex-1 border rounded-lg px-3 py-2 text-sm">
+              <button id="codeBtn" class="bg-slate-900 text-white text-sm rounded-lg px-4">Unlock</button>
+            </div>
+            <p id="codeMsg" class="text-xs text-red-600 mt-1 min-h-[1rem]"></p>
+          </div>
+        </div>
+      </div>
+
+      <p class="text-xs text-slate-500">Planning estimate only, not a quote or bid. Actual costs depend on site conditions, engineering, local code and material pricing at the time of construction. <span id="contact"></span></p>
+    </section>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const usd = n => n.toLocaleString('en-US', {style:'currency', currency:'USD', maximumFractionDigits:0});
+const nv = (id, d=0) => { const v = parseFloat($(id).value); return isFinite(v) && v >= 0 ? v : d; };
+
+const STATES = 'AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY'.split(' ');
+$('state').innerHTML = STATES.map(s => `<option value="${s}">${s}${RATES.highCostStates.includes(s) ? ' (higher-cost market)' : ''}</option>`).join('');
+$('state').value = 'TX';
+
+function compute(o) {
+  const W = o.W, L = o.L, foot = W * L, living = foot * o.liv, shop = foot - living;
+  const heightRate = 16.50 + (o.eave - 12) / 6 * 5.00;
+  const pitchMult = 1 + (o.pitch - 3) / 3 * 0.07;
+  const steel = Math.min(23.00, heightRate * pitchMult);
+  const erect = 8.75 + (o.eave - 12) / 6 * 1.50;
+  const slab = RATES.slab[o.slab], insul = RATES.insul[o.insul];
+  const region = 1 + o.regionPct / 100;
+  const interior = o.finish === 'turnkey' ? living * RATES.livingInterior + shop * RATES.shopInterior : foot * RATES.dryIn;
+  const parts = [
+    ['Slab', foot * slab], ['Steel package', foot * steel], ['Erection', foot * erect],
+    ['Insulation', foot * insul], ['Interior', interior], ['Porch', o.porch * (slab + steel + erect)]
+  ].map(p => [p[0], p[1] * region]);
+  const target = parts.reduce((s, p) => s + p[1], 0);
+  return { foot, living, shop, parts, target, low: target * (1 + RATES.lowPct), high: target * (1 + RATES.highPct), region, steel, erect };
+}
+
+function read() {
+  return { W: nv('width'), L: nv('length'), eave: Math.min(18, Math.max(12, nv('eave', 12))),
+    pitch: Math.min(6, Math.max(3, nv('pitch', 3))), liv: nv('livPct', 60) / 100, porch: nv('porch'),
+    slab: $('slab').value, insul: $('insul').value, finish: $('finish').value, state: $('state').value,
+    regionPct: Math.min(30, Math.max(-15, parseFloat($('region').value) || 0)) };
+}
+function stateDefaultPct(s) { return RATES.highCostStates.includes(s) ? Math.round((RATES.regionHigh - 1) * 1000) / 10 : 0; }
+$('state').addEventListener('change', () => { $('region').value = stateDefaultPct($('state').value); });
+$('region').value = stateDefaultPct($('state').value);
+
+const COLORS = ['#b45309','#0f172a','#0369a1','#15803d','#a21caf','#64748b'];
+
+function pmt(P, ratePct, years) {
+  const r = ratePct / 100 / 12, n = years * 12;
+  return r === 0 ? P / n : P * r / (1 - Math.pow(1 + r, -n));
+}
+
+function render() {
+  const o = read(), r = compute(o);
+  $('eaveOut').textContent = o.eave; $('pitchOut').textContent = o.pitch; $('regionOut').textContent = (o.regionPct > 0 ? '+' : '') + o.regionPct;
+  const lp = Math.round(o.liv * 100); $('livOut').textContent = lp; $('shopOut').textContent = 100 - lp;
+
+  $('tLow').textContent = usd(r.low); $('tTarget').textContent = usd(r.target); $('tHigh').textContent = usd(r.high);
+  const totalSf = r.foot + o.porch;
+  $('psf').textContent = `About ${usd(r.target / Math.max(1, r.foot))} per sq ft of enclosed building at target`;
+  $('areas').textContent = `${r.foot.toLocaleString()} sf enclosed (${Math.round(r.living).toLocaleString()} living, ${Math.round(r.shop).toLocaleString()} shop) + ${o.porch.toLocaleString()} sf porch`;
+
+  // donut
+  const parts = r.parts.filter(p => p[1] > 0), tot = r.target; let off = 25, svg = '';
+  parts.forEach((p, i) => {
+    const pct = p[1] / tot * 100;
+    svg += `<circle cx="21" cy="21" r="15.915" fill="none" stroke="${COLORS[i % COLORS.length]}" stroke-width="6" stroke-dasharray="${pct} ${100 - pct}" stroke-dashoffset="${off}"></circle>`;
+    off -= pct;
+  });
+  $('donut').innerHTML = svg;
+  $('legend').innerHTML = parts.map((p, i) =>
+    `<li class="flex items-center justify-between"><span class="flex items-center gap-2"><span class="inline-block w-3 h-3 rounded-sm" style="background:${COLORS[i % COLORS.length]}"></span>${p[0]}</span><span class="font-medium">${usd(p[1])} <span class="text-slate-400 text-xs">${Math.round(p[1] / tot * 100)}%</span></span></li>`).join('');
+
+  // what-if
+  const variants = [
+    ['Spray foam instead of batt', { ...o, insul: 'foam' }],
+    ['6" heavy slab instead of 4"', { ...o, slab: 'heavy' }],
+    ['Eave height +2 ft', { ...o, eave: Math.min(18, o.eave + 2) }],
+    ['Eave height -2 ft', { ...o, eave: Math.max(12, o.eave - 2) }],
+    ['Shift 10% of space from living to shop', { ...o, liv: Math.max(0, o.liv - 0.10) }],
+    ['Dry-in only (you finish the inside)', { ...o, finish: 'dryin' }],
+    ['No porch', { ...o, porch: 0 }]
+  ];
+  $('whatif').innerHTML = variants.map(v => {
+    const d = compute(v[1]).target - r.target;
+    const cls = d > 0 ? 'text-red-700' : (d < 0 ? 'text-emerald-700' : 'text-slate-400');
+    return `<tr class="border-b last:border-0"><td class="py-2">${v[0]}</td><td class="py-2 text-right font-semibold ${cls}">${d === 0 ? 'no change' : (d > 0 ? '+' : '-') + usd(Math.abs(d))}</td></tr>`;
+  }).join('');
+
+  // payment
+  const down = Math.min(90, nv('down', 20)) / 100, rate = nv('rate', 7), yrs = Math.max(1, nv('years', 30));
+  $('pmLow').textContent = usd(pmt(r.low * (1 - down), rate, yrs)) + '/mo';
+  $('pmTarget').textContent = usd(pmt(r.target * (1 - down), rate, yrs)) + '/mo';
+  $('pmHigh').textContent = usd(pmt(r.high * (1 - down), rate, yrs)) + '/mo';
+  window.__plan = { o, r };
+}
+
+/* ---- paywall ---- */
+async function sha256(s) {
+  const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s.trim().toUpperCase()));
+  return Array.from(new Uint8Array(b)).map(x => x.toString(16).padStart(2, '0')).join('');
+}
+function setUnlocked(on) {
+  $('resultsWrap').classList.toggle('locked', !on);
+  $('paywall').style.display = on ? 'none' : 'flex';
+}
+function storedUnlock() { try { return localStorage.getItem('vb_barndo_unlocked') === '1'; } catch (e) { return false; } }
+$('priceLbl').textContent = CONFIG.PRICE_LABEL;
+document.querySelectorAll('.priceLbl2').forEach(e => e.textContent = CONFIG.PRICE_LABEL);
+$('contact').textContent = CONFIG.CONTACT_LINE;
+$('buyBtn').href = CONFIG.STRIPE_PAYMENT_LINK || '#';
+$('buyBtn').addEventListener('click', e => { if (!CONFIG.STRIPE_PAYMENT_LINK) { e.preventDefault(); $('codeMsg').textContent = 'Checkout is not connected yet.'; } });
+$('codeBtn').addEventListener('click', async () => {
+  const h = await sha256($('code').value);
+  if (CONFIG.UNLOCK_HASHES.includes(h)) {
+    try { localStorage.setItem('vb_barndo_unlocked', '1'); } catch (e) {}
+    setUnlocked(true); $('codeMsg').textContent = '';
+  } else { $('codeMsg').textContent = 'That code did not match. Check it and try again.'; }
+});
+setUnlocked(storedUnlock());
+
+/* ---- lead capture ---- */
+$('leadForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const { o, r } = window.__plan, lp = Math.round(o.liv * 100);
+  const payload = {
+    source: 'visionbuilt-barndo-planner',
+    contact: { name: $('cName').value, email: $('cEmail').value, phone: $('cPhone').value },
+    contact_custom_fields: [
+      { key: 'barndo_width_ft', field_value: o.W }, { key: 'barndo_length_ft', field_value: o.L },
+      { key: 'barndo_footprint_sqft', field_value: r.foot }, { key: 'barndo_eave_height_ft', field_value: o.eave },
+      { key: 'barndo_roof_pitch', field_value: o.pitch + ':12' }, { key: 'barndo_living_pct', field_value: lp },
+      { key: 'barndo_porch_sqft', field_value: o.porch }, { key: 'barndo_state', field_value: o.state },
+      { key: 'barndo_interior_scope', field_value: o.finish }, { key: 'barndo_estimate_low', field_value: Math.round(r.low) },
+      { key: 'barndo_estimate_target', field_value: Math.round(r.target) }, { key: 'barndo_estimate_high', field_value: Math.round(r.high) }
+    ]
+  };
+  if (!CONFIG.GHL_WEBHOOK_URL) { $('leadMsg').textContent = 'Lead delivery is not connected yet.'; return; }
+  try {
+    const res = await fetch(CONFIG.GHL_WEBHOOK_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    $('leadMsg').textContent = res.ok ? 'Sent. Robert will be in touch.' : 'Something went wrong. Please try again.';
+  } catch (err) { $('leadMsg').textContent = 'Could not send. Please try again.'; }
+});
+$('printBtn').addEventListener('click', () => window.print());
+
+document.querySelectorAll('input, select').forEach(el => { el.addEventListener('input', render); el.addEventListener('change', render); });
+render();
+</script>
+</body>
+</html>
